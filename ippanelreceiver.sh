@@ -137,8 +137,45 @@ print(secrets.token_urlsafe(32))
 PY
 }
 
+generate_report_path() {
+  "$PYTHON_BIN" - <<'PY'
+import secrets
+print("/report-" + secrets.token_urlsafe(12).replace("_", "-"))
+PY
+}
+
 json_escape() {
   "$PYTHON_BIN" -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"
+}
+
+config_value() {
+  local key="$1"
+  local default="${2:-}"
+  "$PYTHON_BIN" - "$CONFIG_FILE" "$key" "$default" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+key = sys.argv[2]
+default = sys.argv[3]
+try:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    for part in key.split("."):
+        if isinstance(value, dict):
+            value = value.get(part)
+        else:
+            value = None
+        if value is None:
+            print(default)
+            raise SystemExit(0)
+    if isinstance(value, (dict, list)):
+        print(json.dumps(value, ensure_ascii=False))
+    else:
+        print(value)
+except Exception:
+    print(default)
+PY
 }
 
 is_installed() {
@@ -172,7 +209,7 @@ ensure_python() {
 }
 
 install_files() {
-  local self=""
+  local self="" shortcut_real="" tmp_shortcut=""
 
   ensure_python
   mkdir -p "$APP_DIR" "$CONFIG_DIR"
@@ -190,14 +227,23 @@ install_files() {
     chmod 0755 "$RECEIVER_FILE"
   fi
 
-  if [ -f "$self" ]; then
+  shortcut_real="$(readlink -f "$SHORTCUT_BIN" 2>/dev/null || echo "$SHORTCUT_BIN")"
+  if [ -f "$self" ] && [ "$self" != "$shortcut_real" ]; then
     install -m 0755 "$self" "$SHORTCUT_BIN"
   else
-    download_file "${REPO_RAW_URL}/ippanelreceiver.sh" "$SHORTCUT_BIN" || {
-      warn "安装快捷命令失败。"
+    tmp_shortcut="$(mktemp)"
+    if download_file "${REPO_RAW_URL}/ippanelreceiver.sh" "$tmp_shortcut"; then
+      install -m 0755 "$tmp_shortcut" "$SHORTCUT_BIN"
+      rm -f "$tmp_shortcut"
+    else
+      rm -f "$tmp_shortcut"
+      if [ -f "$SHORTCUT_BIN" ]; then
+        warn "快捷命令更新失败，已保留现有文件。"
+      else
+        warn "安装快捷命令失败。"
+      fi
       return 0
     }
-    chmod 0755 "$SHORTCUT_BIN"
   fi
 }
 
@@ -229,7 +275,7 @@ write_config_interactive() {
 
   listen_host="$(prompt_required "监听 IP")"
   listen_port="$(prompt_default "监听端口" "8787")"
-  report_path="$(prompt_default "上报路径" "/report")"
+  report_path="$(prompt_default "上报路径" "$(generate_report_path)")"
   nf_command="/usr/local/sbin/nf"
   reporter_id="$(prompt_required "ippanelbot 上报方 ID（自定义名称，用于区分不同 bot）")"
   allowed_ip="$(prompt_default "允许上报的 ippanelbot 来源 IP 或 CIDR" "10.77.0.1")"
@@ -288,6 +334,7 @@ write_config_interactive() {
 EOF
   chmod 600 "$CONFIG_FILE"
   ok "配置已保存: ${CONFIG_FILE}"
+  ok "上报路径: ${report_path}"
 }
 
 validate_config() {
@@ -368,6 +415,139 @@ print(json.dumps(config, ensure_ascii=False, indent=2))
 PY
 }
 
+after_config_change() {
+  chmod 600 "$CONFIG_FILE"
+  validate_config || return 1
+  if systemctl is-active --quiet "$APP_NAME"; then
+    if prompt_yes_no "现在重启服务使配置生效？[Y/n]: " "yes"; then
+      restart_app
+    else
+      warn "配置已保存，服务尚未重启。"
+    fi
+  fi
+}
+
+show_report_info() {
+  require_installed || return 1
+  local listen_host listen_port report_path
+  listen_host="$(config_value listen.host "")"
+  listen_port="$(config_value listen.port "8787")"
+  report_path="$(config_value listen.path "/report")"
+  ok "当前上报路径: ${report_path}"
+  info "监听地址: ${listen_host}:${listen_port}"
+  info "ippanelbot 里的 Receiver 上报地址应填写: http://中转VPS可访问IP:${listen_port}${report_path}"
+}
+
+configure_listen() {
+  require_installed || return 1
+  local listen_host listen_port report_path default_path
+
+  listen_host="$(prompt_default "监听 IP" "$(config_value listen.host "")")"
+  listen_port="$(prompt_default "监听端口" "$(config_value listen.port "8787")")"
+  default_path="$(config_value listen.path "/report")"
+  if prompt_yes_no "是否生成新的随机上报路径？[y/N]: " "no"; then
+    default_path="$(generate_report_path)"
+  fi
+  report_path="$(prompt_default "上报路径" "$default_path")"
+
+  "$PYTHON_BIN" - "$CONFIG_FILE" "$listen_host" "$listen_port" "$report_path" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+host = sys.argv[2].strip()
+port = int(sys.argv[3])
+report_path = sys.argv[4].strip()
+if not report_path.startswith("/"):
+    report_path = "/" + report_path
+config = json.loads(path.read_text(encoding="utf-8"))
+listen = config.setdefault("listen", {})
+listen["host"] = host
+listen["port"] = port
+listen["path"] = report_path
+path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+print(report_path)
+PY
+  ok "监听配置已保存。"
+  show_report_info
+  after_config_change
+}
+
+upsert_reporter() {
+  require_installed || return 1
+  local reporter_id allowed_ip secret generated
+
+  reporter_id="$(prompt_required "上报方 ID reporter")"
+  allowed_ip="$(prompt_required "允许来源 IP 或 CIDR")"
+  prompt "上报密钥，留空则新建时自动生成、修改时保留原密钥: "
+  secret="$(trim "${REPLY:-}")"
+
+  generated="$("$PYTHON_BIN" - "$CONFIG_FILE" "$reporter_id" "$allowed_ip" "$secret" <<'PY'
+import json
+import secrets
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+reporter_id = sys.argv[2].strip()
+allowed_ip = sys.argv[3].strip()
+secret = sys.argv[4].strip()
+config = json.loads(path.read_text(encoding="utf-8"))
+reporters = config.setdefault("reporters", {})
+existing = reporters.get(reporter_id, {}) if isinstance(reporters.get(reporter_id), dict) else {}
+generated = ""
+if not secret:
+    secret = str(existing.get("secret") or "")
+if not secret:
+    secret = secrets.token_urlsafe(32)
+    generated = secret
+reporters[reporter_id] = {"allowed_ips": [allowed_ip], "secret": secret}
+path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+print(generated)
+PY
+)"
+  ok "上报方已保存: ${reporter_id}"
+  if [ -n "$generated" ]; then
+    ok "已生成上报密钥: ${generated}"
+    warn "请保存这个密钥，配置 ippanelbot 中转同步时需要使用。"
+  fi
+  after_config_change
+}
+
+upsert_target() {
+  require_installed || return 1
+  local target_name allowed_reporters remark
+
+  target_name="$(prompt_required "目标名称 target_name")"
+  allowed_reporters="$(prompt_required "允许的上报方 ID，多个用英文逗号分隔")"
+  remark="$(prompt_required "easynftables 备注 remark")"
+
+  "$PYTHON_BIN" - "$CONFIG_FILE" "$target_name" "$allowed_reporters" "$remark" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+target_name = sys.argv[2].strip()
+allowed_reporters = [item.strip() for item in sys.argv[3].split(",") if item.strip()]
+remark = sys.argv[4].strip()
+if not allowed_reporters:
+    print("allowed_reporters 不能为空", file=sys.stderr)
+    raise SystemExit(1)
+config = json.loads(path.read_text(encoding="utf-8"))
+targets = config.setdefault("targets", {})
+targets[target_name] = {
+    "allowed_reporters": allowed_reporters,
+    "match_modes": ["remark", "old_ip", "old_ip_unique"],
+    "remark": remark,
+}
+path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
+  ok "目标已保存: ${target_name}"
+  after_config_change
+}
+
 uninstall_app() {
   if ! has_install_files; then
     warn "当前未安装，无需卸载。"
@@ -397,12 +577,16 @@ print_menu() {
   echo ""
   echo "1. 安装或更新"
   echo "2. 查看配置"
-  echo "3. 启动"
-  echo "4. 停止"
-  echo "5. 重启"
-  echo "6. 查看状态"
-  echo "7. 查看日志"
-  echo "8. 卸载"
+  echo "3. 查看上报信息"
+  echo "4. 修改监听和上报路径"
+  echo "5. 添加或修改上报方"
+  echo "6. 添加或修改目标"
+  echo "7. 启动"
+  echo "8. 停止"
+  echo "9. 重启"
+  echo "10. 查看状态"
+  echo "11. 查看日志"
+  echo "12. 卸载"
   echo "0. 退出"
 }
 
@@ -411,17 +595,21 @@ main_menu() {
   while true; do
     print_header
     print_menu
-    prompt "请选择 [0-8]: "
+    prompt "请选择 [0-12]: "
     choice="$(trim "${REPLY:-}")"
     case "$choice" in
       1) install_app ;;
       2) show_config ;;
-      3) start_app ;;
-      4) stop_app ;;
-      5) restart_app ;;
-      6) show_status ;;
-      7) show_logs ;;
-      8) uninstall_app ;;
+      3) show_report_info ;;
+      4) configure_listen ;;
+      5) upsert_reporter ;;
+      6) upsert_target ;;
+      7) start_app ;;
+      8) stop_app ;;
+      9) restart_app ;;
+      10) show_status ;;
+      11) show_logs ;;
+      12) uninstall_app ;;
       0) exit 0 ;;
       *) err "无效选项。" ;;
     esac
@@ -435,6 +623,10 @@ main() {
   case "${1:-}" in
     install|--install) install_app ;;
     config|show-config|view-config) show_config ;;
+    report|report-info) show_report_info ;;
+    listen|path|set-path) configure_listen ;;
+    reporter|set-reporter) upsert_reporter ;;
+    target|set-target) upsert_target ;;
     start) start_app ;;
     stop) stop_app ;;
     restart) restart_app ;;
@@ -444,7 +636,7 @@ main() {
     ""|menu) main_menu ;;
     *)
       err "未知命令: $1"
-      echo "用法: $0 [install|config|start|stop|restart|status|logs|uninstall]"
+      echo "用法: $0 [install|config|report|listen|reporter|target|start|stop|restart|status|logs|uninstall]"
       exit 1
       ;;
   esac
