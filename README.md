@@ -37,11 +37,11 @@ bash <(curl -Ls https://raw.githubusercontent.com/DarkJimiHole/ippanelreceiver/m
       "secret": "replace-with-a-long-random-secret"
     }
   },
-  "nodes": {
-    "hk-home": {
+  "receivers": {
+    "receiver1": {
       "allowed_reporters": ["bot-main"],
-      "match_modes": ["node", "old_ip", "old_ip_unique"],
-      "remark": "hk-home"
+      "match_modes": ["remark", "old_ip", "old_ip_unique"],
+      "remark": "receiver1"
     }
   }
 }
@@ -49,16 +49,16 @@ bash <(curl -Ls https://raw.githubusercontent.com/DarkJimiHole/ippanelreceiver/m
 
 `reporter` 表示一个被允许上报的 `ippanelbot` 实例。
 
-`node` 表示 receiver 端的一个更新目标。使用 `node` 模式时，`remark`
-应该和 easynftables 里的备注一致。
+`receiver_name` 表示 receiver 端的一个更新目标。使用 `remark` 模式时，
+`remark` 应该和 easynftables 里的备注一致。
 
 ## 上报内容
 
 ```json
 {
   "reporter": "bot-main",
-  "node": "hk-home",
-  "match_mode": "node",
+  "receiver_name": "receiver1",
+  "match_mode": "remark",
   "ip": "new.ip.address.here",
   "old_ip": "old.ip.address.here",
   "ts": 1770000000,
@@ -74,7 +74,7 @@ X-IPPanelReceiver-Signature: sha256=<hmac_sha256(secret, raw_body)>
 
 支持的 `match_mode`：
 
-- `node`：调用 `nf --set-dest-ip-by-remark <remark> <ip>`
+- `remark`：调用 `nf --set-dest-ip-by-remark <remark> <ip>`
 - `old_ip`：调用 `nf --set-dest-ip-by-current-ip <old_ip> <ip>`
 - `old_ip_unique`：调用 `nf --set-dest-ip-by-current-ip-unique <old_ip> <ip>`
 

@@ -48,8 +48,8 @@ class ReporterConfig:
 
 
 @dataclass(frozen=True)
-class NodeConfig:
-    node_id: str
+class ReceiverConfig:
+    receiver_name: str
     allowed_reporters: tuple[str, ...]
     match_modes: tuple[str, ...]
     remark: str
@@ -67,7 +67,7 @@ class AppConfig:
     nf_timeout_seconds: int
     allow_private_target_ips: bool
     reporters: dict[str, ReporterConfig]
-    nodes: dict[str, NodeConfig]
+    receivers: dict[str, ReceiverConfig]
 
 
 class NonceCache:
@@ -130,7 +130,7 @@ class ReceiverHandler(BaseHTTPRequestHandler):
             raw_body = self._read_body()
             payload = parse_payload(raw_body)
             reporter_id = require_string(payload, "reporter")
-            node_id = require_string(payload, "node")
+            receiver_name = require_string(payload, "receiver_name")
             match_mode = require_string(payload, "match_mode")
             new_ip = require_string(payload, "ip")
             timestamp_value = require_int(payload, "ts")
@@ -165,22 +165,22 @@ class ReceiverHandler(BaseHTTPRequestHandler):
             self._send_json(409, {"ok": False, "error": "replayed_nonce"})
             return
 
-        node = self.server.config.nodes.get(node_id)
-        if node is None:
-            self._send_json(403, {"ok": False, "error": "unknown_node"})
+        receiver = self.server.config.receivers.get(receiver_name)
+        if receiver is None:
+            self._send_json(403, {"ok": False, "error": "unknown_receiver"})
             return
 
-        if reporter_id not in node.allowed_reporters:
-            self._send_json(403, {"ok": False, "error": "reporter_not_allowed_for_node"})
+        if reporter_id not in receiver.allowed_reporters:
+            self._send_json(403, {"ok": False, "error": "reporter_not_allowed_for_receiver"})
             return
 
-        if match_mode not in node.match_modes:
+        if match_mode not in receiver.match_modes:
             self._send_json(403, {"ok": False, "error": "match_mode_not_allowed"})
             return
 
         try:
             validate_target_ipv4(new_ip, self.server.config.allow_private_target_ips)
-            nf_args = build_nf_args(node, match_mode, payload, new_ip, self.server.config.allow_private_target_ips)
+            nf_args = build_nf_args(receiver, match_mode, payload, new_ip, self.server.config.allow_private_target_ips)
         except ValueError as exc:
             self._send_json(400, {"ok": False, "error": "invalid_target", "detail": str(exc)})
             return
@@ -192,7 +192,7 @@ class ReceiverHandler(BaseHTTPRequestHandler):
         )
         if not success:
             self._log(
-                f"update_failed reporter={reporter_id} node={node_id} mode={match_mode} "
+                f"update_failed reporter={reporter_id} receiver_name={receiver_name} mode={match_mode} "
                 f"source={source_ip} ip={new_ip} detail={detail}"
             )
             self._send_json(
@@ -208,7 +208,7 @@ class ReceiverHandler(BaseHTTPRequestHandler):
             return
 
         self._log(
-            f"updated reporter={reporter_id} node={node_id} mode={match_mode} "
+            f"updated reporter={reporter_id} receiver_name={receiver_name} mode={match_mode} "
             f"source={source_ip} ip={new_ip}"
         )
         self._send_json(
@@ -216,7 +216,7 @@ class ReceiverHandler(BaseHTTPRequestHandler):
             {
                 "ok": True,
                 "reporter": reporter_id,
-                "node": node_id,
+                "receiver_name": receiver_name,
                 "match_mode": match_mode,
                 "ip": new_ip,
                 "stdout": stdout,
@@ -331,14 +331,14 @@ def validate_target_ipv4(value: str, allow_private: bool) -> None:
 
 
 def build_nf_args(
-    node: NodeConfig,
+    receiver: ReceiverConfig,
     match_mode: str,
     payload: dict[str, Any],
     new_ip: str,
     allow_private: bool,
 ) -> list[str]:
-    if match_mode == "node":
-        return ["--set-dest-ip-by-remark", node.remark or node.node_id, new_ip]
+    if match_mode == "remark":
+        return ["--set-dest-ip-by-remark", receiver.remark or receiver.receiver_name, new_ip]
     if match_mode == "old_ip":
         old_ip = require_string(payload, "old_ip")
         validate_target_ipv4(old_ip, allow_private)
@@ -412,8 +412,8 @@ def load_config(path: Path) -> AppConfig:
         raise ConfigError("nf_command must not be empty")
 
     reporters = load_reporters(raw.get("reporters"))
-    nodes = load_nodes(raw.get("nodes"))
-    validate_node_reporters(nodes, reporters)
+    receivers = load_receivers(raw.get("receivers"))
+    validate_receiver_reporters(receivers, reporters)
 
     return AppConfig(
         listen_host=listen_host,
@@ -426,7 +426,7 @@ def load_config(path: Path) -> AppConfig:
         nf_timeout_seconds=read_int(raw, "nf_timeout_seconds", 30, minimum=1),
         allow_private_target_ips=read_bool(raw, "allow_private_target_ips", False),
         reporters=reporters,
-        nodes=nodes,
+        receivers=receivers,
     )
 
 
@@ -478,49 +478,49 @@ def load_reporters(raw_reporters: Any) -> dict[str, ReporterConfig]:
     return reporters
 
 
-def load_nodes(raw_nodes: Any) -> dict[str, NodeConfig]:
-    if not isinstance(raw_nodes, dict) or not raw_nodes:
-        raise ConfigError("nodes must be a non-empty object")
+def load_receivers(raw_receivers: Any) -> dict[str, ReceiverConfig]:
+    if not isinstance(raw_receivers, dict) or not raw_receivers:
+        raise ConfigError("receivers must be a non-empty object")
 
-    allowed_modes = {"node", "old_ip", "old_ip_unique"}
-    nodes: dict[str, NodeConfig] = {}
-    for node_id, raw in raw_nodes.items():
-        if not isinstance(node_id, str) or not node_id.strip():
-            raise ConfigError("node id must be a non-empty string")
+    allowed_modes = {"remark", "old_ip", "old_ip_unique"}
+    receivers: dict[str, ReceiverConfig] = {}
+    for receiver_name, raw in raw_receivers.items():
+        if not isinstance(receiver_name, str) or not receiver_name.strip():
+            raise ConfigError("receiver_name must be a non-empty string")
         if not isinstance(raw, dict):
-            raise ConfigError(f"node '{node_id}' must be an object")
+            raise ConfigError(f"receiver '{receiver_name}' must be an object")
 
         allowed_reporters_raw = raw.get("allowed_reporters")
         if not isinstance(allowed_reporters_raw, list) or not allowed_reporters_raw:
-            raise ConfigError(f"node '{node_id}' allowed_reporters must be a non-empty array")
+            raise ConfigError(f"receiver '{receiver_name}' allowed_reporters must be a non-empty array")
         allowed_reporters = tuple(str(item).strip() for item in allowed_reporters_raw if str(item).strip())
         if not allowed_reporters:
-            raise ConfigError(f"node '{node_id}' allowed_reporters must not be empty")
+            raise ConfigError(f"receiver '{receiver_name}' allowed_reporters must not be empty")
 
-        match_modes_raw = raw.get("match_modes", ["node"])
+        match_modes_raw = raw.get("match_modes", ["remark"])
         if not isinstance(match_modes_raw, list) or not match_modes_raw:
-            raise ConfigError(f"node '{node_id}' match_modes must be a non-empty array")
+            raise ConfigError(f"receiver '{receiver_name}' match_modes must be a non-empty array")
         match_modes = tuple(str(item).strip() for item in match_modes_raw if str(item).strip())
         invalid_modes = [mode for mode in match_modes if mode not in allowed_modes]
         if invalid_modes:
-            raise ConfigError(f"node '{node_id}' has invalid match_modes: {', '.join(invalid_modes)}")
+            raise ConfigError(f"receiver '{receiver_name}' has invalid match_modes: {', '.join(invalid_modes)}")
 
-        node_key = node_id.strip()
-        remark = str(raw.get("remark", node_key) or node_key).strip()
-        nodes[node_key] = NodeConfig(
-            node_id=node_key,
+        receiver_key = receiver_name.strip()
+        remark = str(raw.get("remark", receiver_key) or receiver_key).strip()
+        receivers[receiver_key] = ReceiverConfig(
+            receiver_name=receiver_key,
             allowed_reporters=allowed_reporters,
             match_modes=match_modes,
             remark=remark,
         )
-    return nodes
+    return receivers
 
 
-def validate_node_reporters(nodes: dict[str, NodeConfig], reporters: dict[str, ReporterConfig]) -> None:
-    for node in nodes.values():
-        for reporter_id in node.allowed_reporters:
+def validate_receiver_reporters(receivers: dict[str, ReceiverConfig], reporters: dict[str, ReporterConfig]) -> None:
+    for receiver in receivers.values():
+        for reporter_id in receiver.allowed_reporters:
             if reporter_id not in reporters:
-                raise ConfigError(f"node '{node.node_id}' references unknown reporter '{reporter_id}'")
+                raise ConfigError(f"receiver '{receiver.receiver_name}' references unknown reporter '{reporter_id}'")
 
 
 def parse_args() -> argparse.Namespace:
@@ -545,7 +545,7 @@ def main() -> int:
 
     if args.check_config:
         print(
-            f"ok: config loaded reporters={len(config.reporters)} nodes={len(config.nodes)} "
+            f"ok: config loaded reporters={len(config.reporters)} receivers={len(config.receivers)} "
             f"listen={config.listen_host}:{config.listen_port}{config.report_path}"
         )
         return 0
@@ -554,7 +554,7 @@ def main() -> int:
     print(
         f"[{utc_now()}] ippanelreceiver listening on "
         f"{config.listen_host}:{config.listen_port}{config.report_path} "
-        f"reporters={len(config.reporters)} nodes={len(config.nodes)}",
+        f"reporters={len(config.reporters)} receivers={len(config.receivers)}",
         flush=True,
     )
 

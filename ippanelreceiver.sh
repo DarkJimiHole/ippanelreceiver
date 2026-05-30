@@ -224,8 +224,8 @@ EOF
 }
 
 write_config_interactive() {
-  local listen_host listen_port report_path nf_command reporter_id allowed_ip secret node_id remark allow_private
-  local listen_host_json report_path_json nf_command_json reporter_id_json allowed_ip_json secret_json node_id_json remark_json
+  local listen_host listen_port report_path nf_command reporter_id allowed_ip secret receiver_name remark allow_private
+  local listen_host_json report_path_json nf_command_json reporter_id_json allowed_ip_json secret_json receiver_name_json remark_json
 
   listen_host="$(prompt_required "监听 IP")"
   listen_port="$(prompt_default "监听端口" "8787")"
@@ -242,8 +242,8 @@ write_config_interactive() {
     warn "请保存这个密钥，后续配置 ippanelbot 中转同步时需要使用。"
   fi
 
-  node_id="$(prompt_default "节点 ID" "hk-home")"
-  remark="$node_id"
+  receiver_name="$(prompt_default "receiver_name" "receiver1")"
+  remark="$receiver_name"
   allow_private="false"
   if prompt_yes_no "是否允许转发目标为私有 IP？[y/N]: " "no"; then
     allow_private="true"
@@ -255,7 +255,7 @@ write_config_interactive() {
   reporter_id_json="$(json_escape "$reporter_id")"
   allowed_ip_json="$(json_escape "$allowed_ip")"
   secret_json="$(json_escape "$secret")"
-  node_id_json="$(json_escape "$node_id")"
+  receiver_name_json="$(json_escape "$receiver_name")"
   remark_json="$(json_escape "$remark")"
 
   cat > "$CONFIG_FILE" <<EOF
@@ -277,10 +277,10 @@ write_config_interactive() {
       "secret": ${secret_json}
     }
   },
-  "nodes": {
-    ${node_id_json}: {
+  "receivers": {
+    ${receiver_name_json}: {
       "allowed_reporters": [${reporter_id_json}],
-      "match_modes": ["node", "old_ip", "old_ip_unique"],
+      "match_modes": ["remark", "old_ip", "old_ip_unique"],
       "remark": ${remark_json}
     }
   }
