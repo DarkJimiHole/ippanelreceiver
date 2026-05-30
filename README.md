@@ -9,7 +9,7 @@ easynftables 的 `nf` 命令更新转发目标。
 ## 安装
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/DarkJimiHole/ippanelreceiver/main/ippanelreceiver.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/DarkJimiHole/ippanelreceiver/refs/heads/main/ippanelreceiver.sh)
 ```
 
 安装脚本会创建：

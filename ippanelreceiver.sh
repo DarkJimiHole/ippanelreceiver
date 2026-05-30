@@ -4,7 +4,7 @@ set -Eeuo pipefail
 
 APP_NAME="ippanelreceiver"
 APP_VERSION="v0.1.0"
-REPO_RAW_URL="https://raw.githubusercontent.com/DarkJimiHole/ippanelreceiver/main"
+REPO_RAW_URL="https://raw.githubusercontent.com/DarkJimiHole/ippanelreceiver/refs/heads/main"
 APP_DIR="/opt/${APP_NAME}"
 CONFIG_DIR="/etc/${APP_NAME}"
 CONFIG_FILE="${CONFIG_DIR}/config.json"
