@@ -1,0 +1,26 @@
+{
+  "listen": {
+    "host": "10.77.0.2",
+    "port": 8787,
+    "path": "/report"
+  },
+  "max_body_bytes": 4096,
+  "timestamp_window_seconds": 120,
+  "nonce_ttl_seconds": 600,
+  "nf_command": "/usr/local/sbin/nf",
+  "nf_timeout_seconds": 30,
+  "allow_private_target_ips": false,
+  "reporters": {
+    "bot-main": {
+      "allowed_ips": ["10.77.0.1"],
+      "secret": "replace-with-a-long-random-secret"
+    }
+  },
+  "nodes": {
+    "hk-home": {
+      "allowed_reporters": ["bot-main"],
+      "match_modes": ["node", "old_ip", "old_ip_unique"],
+      "remark": "hk-home"
+    }
+  }
+}
