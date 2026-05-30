@@ -82,8 +82,7 @@ X-IPPanelReceiver-Signature: sha256=<hmac_sha256(secret, raw_body)>
 
 ```bash
 sudo ippanelreceiver install
-sudo ippanelreceiver configure
-sudo ippanelreceiver check
+sudo ippanelreceiver config
 sudo ippanelreceiver start
 sudo ippanelreceiver stop
 sudo ippanelreceiver restart

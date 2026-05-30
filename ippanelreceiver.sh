@@ -290,17 +290,17 @@ EOF
   ok "配置已保存: ${CONFIG_FILE}"
 }
 
-check_config() {
+validate_config() {
   local output=""
 
   require_installed || return 1
 
   if output="$("$PYTHON_BIN" "$RECEIVER_FILE" --config "$CONFIG_FILE" --check-config 2>&1)"; then
-    ok "配置检查通过。"
+    ok "配置已验证。"
     return 0
   fi
 
-  err "配置检查失败："
+  err "配置验证失败："
   printf "%s\n" "$output" >&2
   return 1
 }
@@ -313,29 +313,10 @@ install_app() {
     info "保留现有配置: ${CONFIG_FILE}"
   fi
   write_service
-  check_config
+  validate_config
   systemctl enable "$APP_NAME" >/dev/null
   systemctl restart "$APP_NAME"
   ok "IPPanelReceiver 已安装并启动。"
-}
-
-configure_app() {
-  require_installed || return 1
-  install_files
-  if [ -f "$CONFIG_FILE" ]; then
-    warn "该操作会覆盖当前配置。"
-    if ! prompt_yes_no "是否继续？[y/N]: " "no"; then
-      warn "已取消。"
-      return 0
-    fi
-  fi
-  write_config_interactive
-  write_service
-  check_config
-  if systemctl is-enabled --quiet "$APP_NAME" 2>/dev/null; then
-    systemctl restart "$APP_NAME"
-    ok "服务已重启。"
-  fi
 }
 
 start_app() {
@@ -366,6 +347,27 @@ show_logs() {
   journalctl -u "$APP_NAME" -n 80 --no-pager || true
 }
 
+show_config() {
+  require_installed || return 1
+
+  "$PYTHON_BIN" - "$CONFIG_FILE" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+try:
+    config = json.loads(path.read_text(encoding="utf-8"))
+except Exception as exc:
+    print(f"读取配置失败：{exc}", file=sys.stderr)
+    raise SystemExit(1)
+for reporter in config.get("reporters", {}).values():
+    if isinstance(reporter, dict) and "secret" in reporter:
+        reporter["secret"] = "********"
+print(json.dumps(config, ensure_ascii=False, indent=2))
+PY
+}
+
 uninstall_app() {
   if ! has_install_files; then
     warn "当前未安装，无需卸载。"
@@ -394,14 +396,13 @@ print_header() {
 print_menu() {
   echo ""
   echo "1. 安装或更新"
-  echo "2. 重新配置"
-  echo "3. 检查配置"
-  echo "4. 启动"
-  echo "5. 停止"
-  echo "6. 重启"
-  echo "7. 查看状态"
-  echo "8. 查看日志"
-  echo "9. 卸载"
+  echo "2. 查看配置"
+  echo "3. 启动"
+  echo "4. 停止"
+  echo "5. 重启"
+  echo "6. 查看状态"
+  echo "7. 查看日志"
+  echo "8. 卸载"
   echo "0. 退出"
 }
 
@@ -410,18 +411,17 @@ main_menu() {
   while true; do
     print_header
     print_menu
-    prompt "请选择 [0-9]: "
+    prompt "请选择 [0-8]: "
     choice="$(trim "${REPLY:-}")"
     case "$choice" in
       1) install_app ;;
-      2) configure_app ;;
-      3) check_config ;;
-      4) start_app ;;
-      5) stop_app ;;
-      6) restart_app ;;
-      7) show_status ;;
-      8) show_logs ;;
-      9) uninstall_app ;;
+      2) show_config ;;
+      3) start_app ;;
+      4) stop_app ;;
+      5) restart_app ;;
+      6) show_status ;;
+      7) show_logs ;;
+      8) uninstall_app ;;
       0) exit 0 ;;
       *) err "无效选项。" ;;
     esac
@@ -434,8 +434,7 @@ main() {
   ensure_root
   case "${1:-}" in
     install|--install) install_app ;;
-    configure|config|--configure) configure_app ;;
-    check|--check-config) check_config ;;
+    config|show-config|view-config) show_config ;;
     start) start_app ;;
     stop) stop_app ;;
     restart) restart_app ;;
@@ -445,7 +444,7 @@ main() {
     ""|menu) main_menu ;;
     *)
       err "未知命令: $1"
-      echo "用法: $0 [install|configure|check|start|stop|restart|status|logs|uninstall]"
+      echo "用法: $0 [install|config|start|stop|restart|status|logs|uninstall]"
       exit 1
       ;;
   esac
