@@ -94,7 +94,7 @@ sudo ippanelreceiver uninstall
 
 ## 注意
 
-强烈建议在 `ippanelbot` 和每台 receiver VPS 之间使用 WireGuard 组网。
+建议在 `ippanelbot` 和每台 receiver VPS 之间使用 WireGuard 组网。
 receiver 可以在这个私有网络里使用普通 HTTP，而传输层由 WireGuard 加密。
 
 如果运行 `ippanelbot` 或 `ippanelreceiver` 的服务器本身也是动态
