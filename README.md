@@ -37,11 +37,11 @@ bash <(curl -Ls https://raw.githubusercontent.com/DarkJimiHole/ippanelreceiver/m
       "secret": "replace-with-a-long-random-secret"
     }
   },
-  "receivers": {
-    "receiver1": {
+  "targets": {
+    "target1": {
       "allowed_reporters": ["bot-main"],
       "match_modes": ["remark", "old_ip", "old_ip_unique"],
-      "remark": "receiver1"
+      "remark": "hk-home"
     }
   }
 }
@@ -49,15 +49,15 @@ bash <(curl -Ls https://raw.githubusercontent.com/DarkJimiHole/ippanelreceiver/m
 
 `reporter` 表示一个被允许上报的 `ippanelbot` 实例。
 
-`receiver_name` 表示 receiver 端的一个更新目标。使用 `remark` 模式时，
-`remark` 应该和 easynftables 里的备注一致。
+`target_name` 表示 receiver 端的一个更新目标。使用 `remark` 模式时，
+`remark` 必须和 easynftables 里的备注一致。
 
 ## 上报内容
 
 ```json
 {
   "reporter": "bot-main",
-  "receiver_name": "receiver1",
+  "target_name": "target1",
   "match_mode": "remark",
   "ip": "new.ip.address.here",
   "old_ip": "old.ip.address.here",

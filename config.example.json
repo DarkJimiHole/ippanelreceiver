@@ -16,11 +16,11 @@
       "secret": "replace-with-a-long-random-secret"
     }
   },
-  "receivers": {
-    "receiver1": {
+  "targets": {
+    "target1": {
       "allowed_reporters": ["bot-main"],
       "match_modes": ["remark", "old_ip", "old_ip_unique"],
-      "remark": "receiver1"
+      "remark": "hk-home"
     }
   }
 }

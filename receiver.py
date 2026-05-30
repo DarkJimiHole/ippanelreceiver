@@ -48,8 +48,8 @@ class ReporterConfig:
 
 
 @dataclass(frozen=True)
-class ReceiverConfig:
-    receiver_name: str
+class TargetConfig:
+    target_name: str
     allowed_reporters: tuple[str, ...]
     match_modes: tuple[str, ...]
     remark: str
@@ -67,7 +67,7 @@ class AppConfig:
     nf_timeout_seconds: int
     allow_private_target_ips: bool
     reporters: dict[str, ReporterConfig]
-    receivers: dict[str, ReceiverConfig]
+    targets: dict[str, TargetConfig]
 
 
 class NonceCache:
@@ -130,7 +130,7 @@ class ReceiverHandler(BaseHTTPRequestHandler):
             raw_body = self._read_body()
             payload = parse_payload(raw_body)
             reporter_id = require_string(payload, "reporter")
-            receiver_name = require_string(payload, "receiver_name")
+            target_name = require_string(payload, "target_name")
             match_mode = require_string(payload, "match_mode")
             new_ip = require_string(payload, "ip")
             timestamp_value = require_int(payload, "ts")
@@ -165,22 +165,22 @@ class ReceiverHandler(BaseHTTPRequestHandler):
             self._send_json(409, {"ok": False, "error": "replayed_nonce"})
             return
 
-        receiver = self.server.config.receivers.get(receiver_name)
-        if receiver is None:
-            self._send_json(403, {"ok": False, "error": "unknown_receiver"})
+        target = self.server.config.targets.get(target_name)
+        if target is None:
+            self._send_json(403, {"ok": False, "error": "unknown_target"})
             return
 
-        if reporter_id not in receiver.allowed_reporters:
-            self._send_json(403, {"ok": False, "error": "reporter_not_allowed_for_receiver"})
+        if reporter_id not in target.allowed_reporters:
+            self._send_json(403, {"ok": False, "error": "reporter_not_allowed_for_target"})
             return
 
-        if match_mode not in receiver.match_modes:
+        if match_mode not in target.match_modes:
             self._send_json(403, {"ok": False, "error": "match_mode_not_allowed"})
             return
 
         try:
             validate_target_ipv4(new_ip, self.server.config.allow_private_target_ips)
-            nf_args = build_nf_args(receiver, match_mode, payload, new_ip, self.server.config.allow_private_target_ips)
+            nf_args = build_nf_args(target, match_mode, payload, new_ip, self.server.config.allow_private_target_ips)
         except ValueError as exc:
             self._send_json(400, {"ok": False, "error": "invalid_target", "detail": str(exc)})
             return
@@ -192,7 +192,7 @@ class ReceiverHandler(BaseHTTPRequestHandler):
         )
         if not success:
             self._log(
-                f"update_failed reporter={reporter_id} receiver_name={receiver_name} mode={match_mode} "
+                f"update_failed reporter={reporter_id} target_name={target_name} mode={match_mode} "
                 f"source={source_ip} ip={new_ip} detail={detail}"
             )
             self._send_json(
@@ -208,7 +208,7 @@ class ReceiverHandler(BaseHTTPRequestHandler):
             return
 
         self._log(
-            f"updated reporter={reporter_id} receiver_name={receiver_name} mode={match_mode} "
+            f"updated reporter={reporter_id} target_name={target_name} mode={match_mode} "
             f"source={source_ip} ip={new_ip}"
         )
         self._send_json(
@@ -216,7 +216,7 @@ class ReceiverHandler(BaseHTTPRequestHandler):
             {
                 "ok": True,
                 "reporter": reporter_id,
-                "receiver_name": receiver_name,
+                "target_name": target_name,
                 "match_mode": match_mode,
                 "ip": new_ip,
                 "stdout": stdout,
@@ -331,14 +331,14 @@ def validate_target_ipv4(value: str, allow_private: bool) -> None:
 
 
 def build_nf_args(
-    receiver: ReceiverConfig,
+    target: TargetConfig,
     match_mode: str,
     payload: dict[str, Any],
     new_ip: str,
     allow_private: bool,
 ) -> list[str]:
     if match_mode == "remark":
-        return ["--set-dest-ip-by-remark", receiver.remark or receiver.receiver_name, new_ip]
+        return ["--set-dest-ip-by-remark", target.remark, new_ip]
     if match_mode == "old_ip":
         old_ip = require_string(payload, "old_ip")
         validate_target_ipv4(old_ip, allow_private)
@@ -412,8 +412,8 @@ def load_config(path: Path) -> AppConfig:
         raise ConfigError("nf_command must not be empty")
 
     reporters = load_reporters(raw.get("reporters"))
-    receivers = load_receivers(raw.get("receivers"))
-    validate_receiver_reporters(receivers, reporters)
+    targets = load_targets(raw.get("targets"))
+    validate_target_reporters(targets, reporters)
 
     return AppConfig(
         listen_host=listen_host,
@@ -426,7 +426,7 @@ def load_config(path: Path) -> AppConfig:
         nf_timeout_seconds=read_int(raw, "nf_timeout_seconds", 30, minimum=1),
         allow_private_target_ips=read_bool(raw, "allow_private_target_ips", False),
         reporters=reporters,
-        receivers=receivers,
+        targets=targets,
     )
 
 
@@ -478,49 +478,51 @@ def load_reporters(raw_reporters: Any) -> dict[str, ReporterConfig]:
     return reporters
 
 
-def load_receivers(raw_receivers: Any) -> dict[str, ReceiverConfig]:
-    if not isinstance(raw_receivers, dict) or not raw_receivers:
-        raise ConfigError("receivers must be a non-empty object")
+def load_targets(raw_targets: Any) -> dict[str, TargetConfig]:
+    if not isinstance(raw_targets, dict) or not raw_targets:
+        raise ConfigError("targets must be a non-empty object")
 
     allowed_modes = {"remark", "old_ip", "old_ip_unique"}
-    receivers: dict[str, ReceiverConfig] = {}
-    for receiver_name, raw in raw_receivers.items():
-        if not isinstance(receiver_name, str) or not receiver_name.strip():
-            raise ConfigError("receiver_name must be a non-empty string")
+    targets: dict[str, TargetConfig] = {}
+    for target_name, raw in raw_targets.items():
+        if not isinstance(target_name, str) or not target_name.strip():
+            raise ConfigError("target_name must be a non-empty string")
         if not isinstance(raw, dict):
-            raise ConfigError(f"receiver '{receiver_name}' must be an object")
+            raise ConfigError(f"target '{target_name}' must be an object")
 
         allowed_reporters_raw = raw.get("allowed_reporters")
         if not isinstance(allowed_reporters_raw, list) or not allowed_reporters_raw:
-            raise ConfigError(f"receiver '{receiver_name}' allowed_reporters must be a non-empty array")
+            raise ConfigError(f"target '{target_name}' allowed_reporters must be a non-empty array")
         allowed_reporters = tuple(str(item).strip() for item in allowed_reporters_raw if str(item).strip())
         if not allowed_reporters:
-            raise ConfigError(f"receiver '{receiver_name}' allowed_reporters must not be empty")
+            raise ConfigError(f"target '{target_name}' allowed_reporters must not be empty")
 
         match_modes_raw = raw.get("match_modes", ["remark"])
         if not isinstance(match_modes_raw, list) or not match_modes_raw:
-            raise ConfigError(f"receiver '{receiver_name}' match_modes must be a non-empty array")
+            raise ConfigError(f"target '{target_name}' match_modes must be a non-empty array")
         match_modes = tuple(str(item).strip() for item in match_modes_raw if str(item).strip())
         invalid_modes = [mode for mode in match_modes if mode not in allowed_modes]
         if invalid_modes:
-            raise ConfigError(f"receiver '{receiver_name}' has invalid match_modes: {', '.join(invalid_modes)}")
+            raise ConfigError(f"target '{target_name}' has invalid match_modes: {', '.join(invalid_modes)}")
 
-        receiver_key = receiver_name.strip()
-        remark = str(raw.get("remark", receiver_key) or receiver_key).strip()
-        receivers[receiver_key] = ReceiverConfig(
-            receiver_name=receiver_key,
+        target_key = target_name.strip()
+        remark = str(raw.get("remark", "") or "").strip()
+        if not remark:
+            raise ConfigError(f"target '{target_name}' remark must be a non-empty string")
+        targets[target_key] = TargetConfig(
+            target_name=target_key,
             allowed_reporters=allowed_reporters,
             match_modes=match_modes,
             remark=remark,
         )
-    return receivers
+    return targets
 
 
-def validate_receiver_reporters(receivers: dict[str, ReceiverConfig], reporters: dict[str, ReporterConfig]) -> None:
-    for receiver in receivers.values():
-        for reporter_id in receiver.allowed_reporters:
+def validate_target_reporters(targets: dict[str, TargetConfig], reporters: dict[str, ReporterConfig]) -> None:
+    for target in targets.values():
+        for reporter_id in target.allowed_reporters:
             if reporter_id not in reporters:
-                raise ConfigError(f"receiver '{receiver.receiver_name}' references unknown reporter '{reporter_id}'")
+                raise ConfigError(f"target '{target.target_name}' references unknown reporter '{reporter_id}'")
 
 
 def parse_args() -> argparse.Namespace:
@@ -545,7 +547,7 @@ def main() -> int:
 
     if args.check_config:
         print(
-            f"ok: config loaded reporters={len(config.reporters)} receivers={len(config.receivers)} "
+            f"ok: config loaded reporters={len(config.reporters)} targets={len(config.targets)} "
             f"listen={config.listen_host}:{config.listen_port}{config.report_path}"
         )
         return 0
@@ -554,7 +556,7 @@ def main() -> int:
     print(
         f"[{utc_now()}] ippanelreceiver listening on "
         f"{config.listen_host}:{config.listen_port}{config.report_path} "
-        f"reporters={len(config.reporters)} receivers={len(config.receivers)}",
+        f"reporters={len(config.reporters)} targets={len(config.targets)}",
         flush=True,
     )
 
