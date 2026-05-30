@@ -94,6 +94,21 @@ prompt_default() {
   printf "%s" "$value"
 }
 
+prompt_required() {
+  local message="$1"
+  local value=""
+
+  while true; do
+    prompt "${message}: "
+    value="$(trim "${REPLY:-}")"
+    if [ -n "$value" ]; then
+      printf "%s" "$value"
+      return 0
+    fi
+    err "该项不能为空。"
+  done
+}
+
 prompt_yes_no() {
   local message="$1"
   local default="${2:-no}"
@@ -124,6 +139,23 @@ PY
 
 json_escape() {
   "$PYTHON_BIN" -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"
+}
+
+is_installed() {
+  [ -f "$RECEIVER_FILE" ] && [ -f "$CONFIG_FILE" ] && [ -f "$SERVICE_FILE" ]
+}
+
+has_install_files() {
+  [ -e "$RECEIVER_FILE" ] || [ -e "$CONFIG_FILE" ] || [ -e "$SERVICE_FILE" ] || \
+    [ -e "$SHORTCUT_BIN" ] || [ -d "$APP_DIR" ] || [ -d "$CONFIG_DIR" ]
+}
+
+require_installed() {
+  if is_installed; then
+    return 0
+  fi
+  warn "当前未安装，请先选择 1 安装或执行：sudo ippanelreceiver install"
+  return 1
 }
 
 ensure_python() {
@@ -195,11 +227,11 @@ write_config_interactive() {
   local listen_host listen_port report_path nf_command reporter_id allowed_ip secret node_id remark allow_private
   local listen_host_json report_path_json nf_command_json reporter_id_json allowed_ip_json secret_json node_id_json remark_json
 
-  listen_host="$(prompt_default "监听 IP" "10.77.0.2")"
+  listen_host="$(prompt_required "监听 IP")"
   listen_port="$(prompt_default "监听端口" "8787")"
   report_path="$(prompt_default "上报路径" "/report")"
-  nf_command="$(prompt_default "nf 命令路径" "/usr/local/sbin/nf")"
-  reporter_id="$(prompt_default "ippanelbot 上报方 ID" "bot-main")"
+  nf_command="/usr/local/sbin/nf"
+  reporter_id="$(prompt_required "ippanelbot 上报方 ID（自定义名称，用于区分不同 bot）")"
   allowed_ip="$(prompt_default "允许上报的 ippanelbot 来源 IP 或 CIDR" "10.77.0.1")"
 
   prompt "上报密钥，留空则自动生成: "
@@ -211,7 +243,7 @@ write_config_interactive() {
   fi
 
   node_id="$(prompt_default "节点 ID" "hk-home")"
-  remark="$(prompt_default "node 模式对应的 easynftables 备注" "$node_id")"
+  remark="$node_id"
   allow_private="false"
   if prompt_yes_no "是否允许转发目标为私有 IP？[y/N]: " "no"; then
     allow_private="true"
@@ -261,6 +293,8 @@ EOF
 check_config() {
   local output=""
 
+  require_installed || return 1
+
   if output="$("$PYTHON_BIN" "$RECEIVER_FILE" --config "$CONFIG_FILE" --check-config 2>&1)"; then
     ok "配置检查通过。"
     return 0
@@ -286,6 +320,7 @@ install_app() {
 }
 
 configure_app() {
+  require_installed || return 1
   install_files
   if [ -f "$CONFIG_FILE" ]; then
     warn "该操作会覆盖当前配置。"
@@ -303,15 +338,40 @@ configure_app() {
   fi
 }
 
+start_app() {
+  require_installed || return 1
+  systemctl start "$APP_NAME"
+  ok "已启动。"
+}
+
+stop_app() {
+  require_installed || return 1
+  systemctl stop "$APP_NAME"
+  ok "已停止。"
+}
+
+restart_app() {
+  require_installed || return 1
+  systemctl restart "$APP_NAME"
+  ok "已重启。"
+}
+
 show_status() {
+  require_installed || return 1
   systemctl status "$APP_NAME" --no-pager || true
 }
 
 show_logs() {
+  require_installed || return 1
   journalctl -u "$APP_NAME" -n 80 --no-pager || true
 }
 
 uninstall_app() {
+  if ! has_install_files; then
+    warn "当前未安装，无需卸载。"
+    return 1
+  fi
+
   warn "该操作会删除 IPPanelReceiver 服务、程序文件和配置。"
   if ! prompt_yes_no "是否继续？[y/N]: " "no"; then
     warn "已取消。"
@@ -356,9 +416,9 @@ main_menu() {
       1) install_app ;;
       2) configure_app ;;
       3) check_config ;;
-      4) systemctl start "$APP_NAME"; ok "已启动。" ;;
-      5) systemctl stop "$APP_NAME"; ok "已停止。" ;;
-      6) systemctl restart "$APP_NAME"; ok "已重启。" ;;
+      4) start_app ;;
+      5) stop_app ;;
+      6) restart_app ;;
       7) show_status ;;
       8) show_logs ;;
       9) uninstall_app ;;
@@ -376,9 +436,9 @@ main() {
     install|--install) install_app ;;
     configure|config|--configure) configure_app ;;
     check|--check-config) check_config ;;
-    start) systemctl start "$APP_NAME" ;;
-    stop) systemctl stop "$APP_NAME" ;;
-    restart) systemctl restart "$APP_NAME" ;;
+    start) start_app ;;
+    stop) stop_app ;;
+    restart) restart_app ;;
     status) show_status ;;
     logs) show_logs ;;
     uninstall|--uninstall) uninstall_app ;;
