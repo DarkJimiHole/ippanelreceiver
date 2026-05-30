@@ -243,7 +243,7 @@ install_files() {
         warn "安装快捷命令失败。"
       fi
       return 0
-    }
+    fi
   fi
 }
 
